@@ -14,10 +14,6 @@ The deployment consists of:
 -   Frontend-to-backend communication over the backend VM public IP and
     port `8000`
 
-> **Security note:** Do not commit database passwords, application
-> passwords, API keys, or other credentials to Git. Store them securely
-> and use environment variables or a secret-management solution.
-
 ------------------------------------------------------------------------
 
 ## Architecture
