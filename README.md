@@ -612,11 +612,4 @@ SELECT * FROM telemetry ORDER BY timestamp DESC LIMIT 20;
 | Web Server | Nginx | `80` | Serves frontend static build |
 | API Docs | Swagger UI / ReDoc | `8000/docs` | Interactive API documentation |
 
----
 
-<div align="center">
-
-**Built with ❤️ by [DevOps Insiders](https://github.com/devopsinsiders)**
-
-</div>
-]]>
