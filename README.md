@@ -1,902 +1,622 @@
-# Axion App -- Monolithic Architecture Deployment
+<![CDATA[<!-- markdownlint-disable MD033 -->
+<div align="center">
 
-This repository contains the deployment procedure for the **Axion
-Intelligence Platform** using a monolithic application architecture on
-Azure.
+# 🚀 Axion Intelligence Platform — Monolithic Deployment
 
-The deployment consists of:
+**Production-grade deployment guide for the Axion IoT telemetry platform on Azure**
 
--   Azure infrastructure provisioned with Terraform
--   Azure Database for PostgreSQL
--   PostgreSQL schema and telemetry sample data
--   FastAPI backend running on an Azure VM
--   React/Vite frontend served by Nginx on an Azure VM
--   Frontend-to-backend communication over the backend VM public IP and
-    port `8000`
+[![Terraform](https://img.shields.io/badge/Terraform-v1.x-844FBA?logo=terraform&logoColor=white)](https://www.terraform.io/)
+[![Azure](https://img.shields.io/badge/Azure-Cloud-0078D4?logo=microsoftazure&logoColor=white)](https://portal.azure.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 
-------------------------------------------------------------------------
+---
 
-## Architecture
+</div>
 
-``` text
-                         Internet
-                            |
-                            v
-                +-----------------------+
-                |   Frontend VM         |
-                |   Nginx :80           |
-                |   React / Vite        |
-                +-----------+-----------+
-                            |
-                            | HTTP :8000
-                            v
-                +-----------------------+
-                |   Backend VM          |
-                |   FastAPI / Uvicorn   |
-                |   :8000               |
-                +-----------+-----------+
-                            |
-                            | PostgreSQL :5432
-                            v
-                +-----------------------+
-                | Azure PostgreSQL      |
-                | axiondb               |
-                +-----------------------+
+## 📋 Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#-architecture)
+- [Prerequisites](#-prerequisites)
+- [Repository Map](#-repository-map)
+- [Deployment Guide](#-deployment-guide)
+  - [Phase 1 — Infrastructure](#phase-1--infrastructure-provisioning)
+  - [Phase 2 — Database](#phase-2--database-setup)
+  - [Phase 3 — Backend](#phase-3--backend-deployment)
+  - [Phase 4 — Frontend](#phase-4--frontend-deployment)
+- [End-to-End Validation](#-end-to-end-validation)
+- [Troubleshooting](#-troubleshooting)
+- [Quick Reference Commands](#-quick-reference-commands)
+- [Security Considerations](#-security-considerations)
+- [Tech Stack Summary](#-tech-stack-summary)
+
+---
+
+## Overview
+
+This repository contains the **Terraform infrastructure code** and step-by-step deployment guide for the **Axion Intelligence Platform** — a monolithic IoT telemetry application deployed on Microsoft Azure.
+
+The platform ingests device telemetry (temperature, vibration, current) from industrial equipment across refinery regions and presents real-time dashboards, anomaly detection, and historical trend analysis.
+
+### What Gets Deployed
+
+| Layer          | Service                         | Details                        |
+|----------------|----------------------------------|--------------------------------|
+| Infrastructure | Azure VMs, VNet, NSGs, Public IPs | Terraform-managed              |
+| Database       | Azure Database for PostgreSQL    | Flexible Server (PaaS)         |
+| Backend API    | FastAPI + Uvicorn                | Python, port `8000`            |
+| Frontend       | React / Vite + Nginx             | Static build served on port `80` |
+
+---
+
+## 🏗 Architecture
+
+```mermaid
+graph TD
+    subgraph Internet
+        User["🌐 User Browser"]
+    end
+
+    subgraph Azure["☁️ Azure — Central India"]
+        subgraph VNet["VNet: 10.0.0.0/16"]
+            subgraph FE_Subnet["Frontend Subnet: 10.0.1.0/24"]
+                FE_VM["<b>Frontend VM</b><br/>Nginx :80<br/>React / Vite"]
+            end
+            subgraph BE_Subnet["Backend Subnet: 10.0.2.0/24"]
+                BE_VM["<b>Backend VM</b><br/>FastAPI / Uvicorn :8000"]
+            end
+        end
+        DB["<b>Azure PostgreSQL</b><br/>Flexible Server :5432<br/>Database: axiondb"]
+    end
+
+    User -->|HTTP :80| FE_VM
+    FE_VM -->|API HTTP :8000| BE_VM
+    BE_VM -->|PostgreSQL :5432| DB
+
+    style User fill:#4A90D9,stroke:#2C5F9A,color:#fff
+    style FE_VM fill:#61DAFB,stroke:#21A0C8,color:#000
+    style BE_VM fill:#009688,stroke:#00695C,color:#fff
+    style DB fill:#4169E1,stroke:#2B4C9E,color:#fff
 ```
 
-------------------------------------------------------------------------
+---
 
-# 1. Provision Infrastructure with Terraform
+## ✅ Prerequisites
 
-Infrastructure is provisioned using Terraform.
+Before starting, ensure you have:
 
-Repository:
+- [ ] **Azure Subscription** with permissions to create resources
+- [ ] **Terraform** ≥ 1.x installed ([install guide](https://developer.hashicorp.com/terraform/install))
+- [ ] **Azure CLI** authenticated (`az login`)
+- [ ] **pgAdmin 4** installed for database management
+- [ ] **SSH client** to connect to Azure VMs
+- [ ] **Git** installed
 
-``` text
-https://github.com/shyam-codeops/axion-app-monolithic-Infra.git
+---
+
+## 🗂 Repository Map
+
+| Repository | Purpose | Link |
+|------------|---------|------|
+| **Infrastructure** (this repo) | Terraform IaC for Azure resources | [axion-app-monolithic-Infra](https://github.com/shyam-codeops/axion-app-monolithic-Infra) |
+| **Database Schema** | PostgreSQL table definitions | [axion-database-schema](https://github.com/devopsinsiders/axion-database-schema) |
+| **Backend API** | FastAPI telemetry query service | [axion-telemetry-query-service](https://github.com/devopsinsiders/axion-telemetry-query-service) |
+| **Frontend UI** | React/Vite dashboard application | [axion-ui](https://github.com/devopsinsiders/axion-ui) |
+
+### Project Structure (This Repo)
+
+```
+axion-app-monolithic-Infra/
+├── Child_Modules/                    # Reusable Terraform modules
+│   ├── azurem_virtual_machine/
+│   ├── azurerm_network_interface/
+│   ├── azurerm_network_security_group/
+│   ├── azurerm_postgresql_flexible_server/
+│   ├── azurerm_public_ip/
+│   ├── azurerm_resource_group/
+│   ├── azurerm_subnet/
+│   └── azurerm_virtual_network/
+├── Environment/
+│   └── Dev/                          # Dev environment configuration
+│       ├── main.tf                   # Module composition
+│       ├── provider.tf               # AzureRM provider config
+│       ├── variables.tf              # Variable declarations
+│       └── terraform.tfvars          # Variable values (sensitive!)
+├── DummyData.md                      # Sample telemetry INSERT statements
+└── README.md                         # This file
 ```
 
-Clone the infrastructure repository:
+---
 
-``` bash
+## 📦 Deployment Guide
+
+### Phase 1 — Infrastructure Provisioning
+
+#### Step 1: Clone & Initialize Terraform
+
+```bash
 git clone https://github.com/shyam-codeops/axion-app-monolithic-Infra.git
-cd axion-app-monolithic-Infra
+cd axion-app-monolithic-Infra/Environment/Dev
 ```
 
-Use the appropriate Terraform environment and variables for the
-deployment.
-
-> Keep Terraform variable files containing credentials private. Do not
-> commit secrets to the repository.
-
-------------------------------------------------------------------------
-
-# 2. Configure PostgreSQL with pgAdmin 4
-
-Install and open **pgAdmin 4**.
-
-In pgAdmin:
-
-1.  Right-click **Servers**
-2.  Select **Register → Server**
-3.  Enter any server name
-4.  Open the **Connection** tab
-
-The Azure PostgreSQL endpoint should be used as the hostname.
-
-Example:
-
-``` text
-postgresql-axion-dev-01.postgres.database.azure.com
+```bash
+terraform init
+terraform plan
+terraform apply
 ```
 
-Use the PostgreSQL username and password configured for the Terraform
-environment.
+> [!IMPORTANT]
+> The `terraform.tfvars` file contains sensitive credentials. **Never commit it** to a public repository. Add it to `.gitignore` and use Azure Key Vault or environment variables in production.
 
-## Allow the Client IP
+#### Provisioned Resources
 
-Before saving the pgAdmin connection:
+| Resource | Naming Convention |
+|----------|-------------------|
+| Resource Group | `rg-axion-dev-01` |
+| Virtual Network | `vnet-axion-dev-01` (`10.0.0.0/16`) |
+| Frontend Subnet | `frontend-subnet-axion-dev-01` (`10.0.1.0/24`) |
+| Backend Subnet | `backend-subnet-axion-dev-01` (`10.0.2.0/24`) |
+| Frontend VM | `frontend-vm-axion-dev-01` (`Standard_B2as_v2`) |
+| Backend VM | `backend-vm-axion-dev-01` (`Standard_B2as_v2`) |
+| PostgreSQL Server | `postgresql-axion-dev-01` (Flexible Server) |
+| Database | `axiondb` |
 
-1.  Open the Azure Portal.
-2.  Open the PostgreSQL server.
-3.  Go to **Networking**.
-4.  Add the current client/public IP of the machine running pgAdmin to
-    the PostgreSQL firewall rules.
-5.  Save the firewall rule.
-6.  Return to pgAdmin and save the server connection.
+---
 
-The PostgreSQL server should then appear in pgAdmin.
+### Phase 2 — Database Setup
 
-------------------------------------------------------------------------
+#### Step 2: Allow Client IP on PostgreSQL Firewall
 
-# 3. Create the Telemetry Database Schema
+1. Open the **Azure Portal** → navigate to the PostgreSQL server
+2. Go to **Networking**
+3. Add your current public IP to the firewall allow-list
+4. **Save** the rule
 
-Database schema repository:
+#### Step 3: Connect via pgAdmin 4
 
-``` text
-https://github.com/devopsinsiders/axion-database-schema.git
+1. Open **pgAdmin 4** → Right-click **Servers** → **Register → Server**
+2. Under the **Connection** tab:
+
+   | Field     | Value                                               |
+   |-----------|-----------------------------------------------------|
+   | Hostname  | `postgresql-axion-dev-01.postgres.database.azure.com` |
+   | Port      | `5432`                                              |
+   | Database  | `axiondb`                                           |
+   | Username  | *(from terraform.tfvars)*                           |
+   | Password  | *(from terraform.tfvars)*                           |
+
+3. Save — the server should now appear in the sidebar
+
+#### Step 4: Create the Telemetry Schema
+
+1. Clone the schema repo:
+   ```bash
+   git clone https://github.com/devopsinsiders/axion-database-schema.git
+   ```
+2. Open `02-telemetry.sql` in a text editor
+3. In pgAdmin: expand `axiondb` → right-click **Tables** → **Query Tool**
+4. Paste the SQL and **execute** ▶
+
+#### Step 5: Insert Sample Telemetry Data
+
+1. Open the [DummyData.md](./DummyData.md) file in this repository
+2. In pgAdmin Query Tool, paste the `INSERT` statements and **execute** ▶
+3. Verify:
+   ```sql
+   SELECT COUNT(*) FROM telemetry;
+   -- Expected: 100 rows
+
+   SELECT * FROM telemetry ORDER BY timestamp DESC LIMIT 5;
+   ```
+
+---
+
+### Phase 3 — Backend Deployment
+
+#### Step 6: SSH into Backend VM
+
+```bash
+ssh <username>@<BACKEND-PUBLIC-IP>
 ```
 
-Open:
+#### Step 7: Clone & Set Up the Backend
 
-``` text
-02-telemetry.sql
-```
-
-In pgAdmin:
-
-1.  Expand the PostgreSQL server.
-2.  Open the `axiondb` database.
-3.  Right-click **Tables**.
-4.  Select **Query Tool**.
-5.  Copy the SQL from `02-telemetry.sql`.
-6.  Paste it into the Query Tool.
-7.  Execute the script.
-8.  Refresh the database.
-
-The telemetry table and its columns should now be created.
-
-------------------------------------------------------------------------
-
-# 4. Insert Telemetry Sample Data
-
-Open the project's dummy/sample data file.
-
-In pgAdmin:
-
-1.  Open the `axiondb` database.
-2.  Open **Query Tool**.
-3.  Paste the telemetry sample data.
-4.  Execute the query.
-5.  Refresh the database.
-
-Verify that the telemetry data is present.
-
-Example:
-
-``` sql
-SELECT COUNT(*) FROM telemetry;
-```
-
-You can also inspect the latest records:
-
-``` sql
-SELECT *
-FROM telemetry
-ORDER BY timestamp DESC
-LIMIT 20;
-```
-
-------------------------------------------------------------------------
-
-# 5. Backend Deployment
-
-The backend is the **Axion Telemetry Query Service**.
-
-## SSH into Backend VM
-
-``` bash
-ssh <username>@<backend-public-ip>
-```
-
-## Clone the backend repository
-
-``` bash
+```bash
 git clone https://github.com/devopsinsiders/axion-telemetry-query-service.git
 cd axion-telemetry-query-service
 ```
 
-## Install Python virtual environment support
+```bash
+# Install Python venv support
+sudo apt update && sudo apt install -y python3.12-venv
 
-``` bash
-sudo apt update
-sudo apt install -y python3.12-venv
-```
-
-## Create and activate the virtual environment
-
-``` bash
+# Create & activate virtual environment
 python3 -m venv venv
-source venv/bin/activate
-```
+source venv/bin/activate        # Linux
+# venv\Scripts\activate         # Windows (if applicable)
 
-For Windows:
-
-``` powershell
-venv\Scripts\activate
-```
-
-## Install dependencies
-
-``` bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-------------------------------------------------------------------------
+#### Step 8: Configure Database Connection
 
-# 6. Configure the Backend Database Connection
-
-Open the backend configuration:
-
-``` bash
+```bash
 nano config.py
 ```
 
-Update the PostgreSQL connection settings.
+Set the PostgreSQL connection string:
 
-The configuration should point to:
-
--   PostgreSQL username
--   PostgreSQL password
--   Azure PostgreSQL hostname
--   PostgreSQL port `5432`
--   Database name `axiondb`
-
-Example format:
-
-``` text
+```
 postgresql://<username>:<password>@<postgresql-endpoint>:5432/axiondb
 ```
 
-### Special character in password
+> [!WARNING]
+> If the password contains `@`, URL-encode it as `%40`.
+> Example: `Nested@1234` → `Nested%401234`
 
-If a PostgreSQL password contains `@`, URL-encode it as `%40`.
-
-Example:
-
-``` text
-Nested@1234
-```
-
-becomes:
-
-``` text
-Nested%401234
-```
-
-Also ensure the database host is the Azure PostgreSQL endpoint rather
-than `localhost`.
-
-Save the file and verify it:
-
-``` bash
+Verify the config:
+```bash
 cat config.py
 ```
 
-> Do not paste or commit real credentials into documentation, Git,
-> screenshots, or public repositories.
+#### Step 9: Allow Backend VM IP on PostgreSQL Firewall
 
-------------------------------------------------------------------------
+In Azure Portal → PostgreSQL → **Networking** → add the **Backend VM's public IP** → **Save**
 
-# 7. Allow Backend VM Access to PostgreSQL
+#### Step 10: Open Backend Port 8000
 
-The Backend VM must be allowed through the Azure PostgreSQL firewall.
+Add an **inbound NSG rule** on the Backend VM:
 
-In Azure Portal:
+| Field     | Value     |
+|-----------|-----------|
+| Direction | Inbound   |
+| Protocol  | TCP       |
+| Port      | 8000      |
+| Action    | Allow     |
 
-1.  Open the PostgreSQL server.
-2.  Open **Networking**.
-3.  Add the Backend VM's public IP to the firewall rules.
-4.  Save the configuration.
+> [!TIP]
+> For production, restrict the **Source** to the Frontend VM IP instead of `*` (any).
 
-The backend VM must be able to connect to PostgreSQL over port `5432`.
+#### Step 11: Start the Backend
 
-------------------------------------------------------------------------
-
-# 8. Allow Backend Port 8000
-
-Allow inbound TCP port `8000` on the Backend VM's Azure Network Security
-Group.
-
-Recommended rule:
-
-``` text
-Direction: Inbound
-Protocol: TCP
-Port: 8000
-Action: Allow
-```
-
-For a production deployment, restrict the source instead of allowing the
-port from the entire Internet whenever possible.
-
-------------------------------------------------------------------------
-
-# 9. Start the Backend
-
-From the backend project directory with the virtual environment
-activated:
-
-``` bash
+```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-The API should now listen on:
+#### Step 12: Verify the Backend API
 
-``` text
-http://<BACKEND-PUBLIC-IP>:8000
+| Check | Command / URL |
+|-------|---------------|
+| Swagger UI | `http://<BACKEND-PUBLIC-IP>:8000/docs` |
+| ReDoc | `http://<BACKEND-PUBLIC-IP>:8000/redoc` |
+| Devices | `curl http://<BACKEND-PUBLIC-IP>:8000/devices` |
+| Dashboard | `curl http://<BACKEND-PUBLIC-IP>:8000/dashboard/summary` |
+
+<details>
+<summary>📡 Available API Endpoints</summary>
+
+```
+GET /dashboard/summary
+GET /devices
+GET /devices/{device_id}/latest
+GET /devices/{device_id}/trends
+GET /devices/top-anomalous
+GET /dashboard/throughput
+GET /dashboard/regions
 ```
 
-------------------------------------------------------------------------
+</details>
 
-# 10. Verify Backend API
+> [!NOTE]
+> A `404` at `/` is normal — FastAPI doesn't define a root route. Use `/docs` to confirm the service is running.
 
-## API root
+---
 
-``` bash
-curl http://<BACKEND-PUBLIC-IP>:8000/
+### Phase 4 — Frontend Deployment
+
+#### Step 13: SSH into Frontend VM
+
+```bash
+ssh ssadmin@<FRONTEND-PUBLIC-IP>
 ```
 
-A `404 Not Found` response at `/` can be normal if the FastAPI
-application does not define a root route.
+#### Step 14: Clone the Frontend
 
-## Swagger UI
-
-Open:
-
-``` text
-http://<BACKEND-PUBLIC-IP>:8000/docs
-```
-
-## ReDoc
-
-Open:
-
-``` text
-http://<BACKEND-PUBLIC-IP>:8000/redoc
-```
-
-Swagger should display the Axion Telemetry Query Service endpoints.
-
-The documented API includes endpoints such as:
-
-``` text
-/dashboard/summary
-/devices
-/devices/{device_id}/latest
-/devices/{device_id}/trends
-/devices/top-anomalous
-/dashboard/throughput
-/dashboard/regions
-```
-
-Execute the endpoints from Swagger and confirm that telemetry data is
-returned.
-
-If data is returned successfully, the backend is connected to
-PostgreSQL.
-
-------------------------------------------------------------------------
-
-# 11. Frontend Deployment
-
-The frontend is the Axion React/Vite application.
-
-## SSH into Frontend VM
-
-``` bash
-ssh ssadmin@<frontend-public-ip>
-```
-
-## Clone the frontend
-
-``` bash
+```bash
 git clone https://github.com/devopsinsiders/axion-ui.git
 cd axion-ui
 ```
 
-------------------------------------------------------------------------
+#### Step 15: Install Node.js 22
 
-# 12. Install Node.js 22
-
-``` bash
+```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 
 Verify:
-
-``` bash
-node -v
+```bash
+node -v   # v22.x.x
 npm -v
 ```
 
-------------------------------------------------------------------------
+#### Step 16: Install Dependencies
 
-# 13. Install Frontend Dependencies
-
-``` bash
+```bash
 npm install
 ```
 
-> Do not run `npm audit fix` as part of this deployment procedure unless
-> dependency changes have been reviewed and tested.
+> [!CAUTION]
+> Do **not** run `npm audit fix` unless dependency changes have been reviewed and tested.
 
-------------------------------------------------------------------------
+#### Step 17: Configure Backend API URL
 
-# 14. Configure Backend API URL
+> This must be done **before** building the frontend.
 
-This step must be completed **before running the frontend build**.
+Find and replace the API base URL:
 
-First check the existing API URL:
-
-``` bash
+```bash
+# Check current API URL
 grep -Rni "api.axionsystems.de" src/
-```
 
-The API base URL is used in:
-
-``` text
-src/App.tsx
-src/components/pages/DashboardView.tsx
-src/components/pages/HistoricalTrends.tsx
-```
-
-Replace the old API domain with the actual Backend VM public IP and
-port.
-
-Example:
-
-``` bash
+# Replace with backend VM IP
 sed -i 's|https://api.axionsystems.de|http://<BACKEND-PUBLIC-IP>:8000|g' \
-src/App.tsx \
-src/components/pages/DashboardView.tsx \
-src/components/pages/HistoricalTrends.tsx
-```
+  src/App.tsx \
+  src/components/pages/DashboardView.tsx \
+  src/components/pages/HistoricalTrends.tsx
 
-Verify:
-
-``` bash
+# Verify replacement
 grep -Rni "<BACKEND-PUBLIC-IP>" src/
 ```
 
-For the current direct-IP deployment, the API URL should include port
-`8000`:
+> [!IMPORTANT]
+> Always include port `8000` in the URL.
+> - ✅ `http://<BACKEND-PUBLIC-IP>:8000`
+> - ❌ `http://<BACKEND-PUBLIC-IP>` ← will not work
 
-``` text
-http://<BACKEND-PUBLIC-IP>:8000
-```
+#### Step 18: Build & Deploy to Nginx
 
-### Important
-
-If the backend is exposed directly through Uvicorn on port `8000`, do
-**not** omit the port.
-
-Incorrect:
-
-``` text
-http://<BACKEND-PUBLIC-IP>
-```
-
-Correct:
-
-``` text
-http://<BACKEND-PUBLIC-IP>:8000
-```
-
-If a reverse proxy is later configured on port `80` or `443`, the
-frontend URL can be changed accordingly.
-
-------------------------------------------------------------------------
-
-# 15. Build the Frontend
-
-Run:
-
-``` bash
+```bash
+# Build the frontend
 npm run build
-```
 
-Verify the generated build:
-
-``` bash
-ls -la dist/
-```
-
-Confirm that the backend IP exists in the compiled application:
-
-``` bash
+# Verify the build contains the correct API URL
 grep -Rqs "<BACKEND-PUBLIC-IP>:8000" dist/ \
-&& echo "CORRECT API FOUND" \
-|| echo "API NOT FOUND"
-```
+  && echo "✅ CORRECT API FOUND" \
+  || echo "❌ API NOT FOUND — rebuild required"
 
-This check is important because the browser uses the compiled files in
-`dist/`, not the source files directly.
+# Install Nginx
+sudo apt update && sudo apt install -y nginx
 
-------------------------------------------------------------------------
-
-# 16. Install Nginx
-
-``` bash
-sudo apt update
-sudo apt install -y nginx
-```
-
-Check Nginx:
-
-``` bash
-sudo systemctl status nginx
-```
-
-------------------------------------------------------------------------
-
-# 17. Deploy React/Vite Build to Nginx
-
-Remove the default Nginx content:
-
-``` bash
+# Deploy
 sudo rm -rf /var/www/html/*
-```
-
-Copy the frontend build:
-
-``` bash
 sudo cp -r dist/* /var/www/html/
-```
 
-Verify:
-
-``` bash
-ls -la /var/www/html
-```
-
-------------------------------------------------------------------------
-
-# 18. Start / Reload Nginx
-
-``` bash
+# Enable & start Nginx
 sudo systemctl enable --now nginx
-```
-
-Then:
-
-``` bash
 sudo systemctl reload nginx
 ```
 
-------------------------------------------------------------------------
+#### Step 19: Open Frontend Port 80
 
-# 19. Test Nginx Locally
+Add an **inbound NSG rule** on the Frontend VM:
 
-From the Frontend VM:
+| Field     | Value     |
+|-----------|-----------|
+| Direction | Inbound   |
+| Protocol  | TCP       |
+| Port      | 80        |
+| Source    | Internet  |
+| Action    | Allow     |
 
-``` bash
+#### Step 20: Verify Nginx Locally
+
+```bash
 curl -I http://localhost
+# Expected: HTTP/1.1 200 OK
 ```
 
-Expected:
+---
 
-``` text
-HTTP/1.1 200 OK
-Server: nginx
+## 🧪 End-to-End Validation
+
+Once all components are deployed, validate the full data flow:
+
+```mermaid
+graph LR
+    A["🌐 Browser"] -->|":80"| B["Nginx"]
+    B -->|":8000"| C["FastAPI"]
+    C -->|":5432"| D["PostgreSQL"]
+    D --> E["telemetry table"]
 ```
 
-------------------------------------------------------------------------
+### Validation Checklist
 
-# 20. Allow Frontend HTTP Port 80
+| Layer      | Test | Expected Result |
+|------------|------|-----------------|
+| **Database** | `SELECT COUNT(*) FROM telemetry;` | Row count > 0 |
+| **Backend** | `curl http://<BACKEND-PUBLIC-IP>:8000/docs` | HTTP 200, Swagger UI |
+| **Backend API** | `curl http://<BACKEND-PUBLIC-IP>:8000/devices` | JSON device list |
+| **Frontend (local)** | `curl -I http://localhost` (on Frontend VM) | HTTP 200 |
+| **Frontend (browser)** | Open `http://<FRONTEND-PUBLIC-IP>` | Axion login page |
 
-On the Frontend VM's Azure Network Security Group, create an inbound
-rule:
+### Post-Login Verification
 
-``` text
-Direction: Inbound
-Protocol: TCP
-Port: 80
-Source: Internet
-Action: Allow
-```
+After logging in, confirm these modules load correctly:
 
-For production, restrict access where appropriate.
+- ✅ Dashboard with live telemetry
+- ✅ Asset hierarchy
+- ✅ Historical trends
+- ✅ System topology
+- ✅ Alarms & events
+- ✅ Telemetry throughput
+- ✅ Device data
 
-------------------------------------------------------------------------
+---
 
-# 21. Access the Axion Application
+## 🔧 Troubleshooting
 
-Open:
+<details>
+<summary><b>Frontend loads but no telemetry data appears</b></summary>
 
-``` text
-http://<FRONTEND-PUBLIC-IP>
-```
+**Root Cause:** The compiled frontend build contains an incorrect API URL.
 
-The Axion Intelligence Platform login page should appear.
-
-After login, verify:
-
--   Dashboard
--   Live telemetry
--   Asset hierarchy
--   Historical trends
--   System topology
--   Alarms & events
--   Telemetry throughput
--   Device data
-
-------------------------------------------------------------------------
-
-# 22. End-to-End Validation
-
-The complete data flow should be:
-
-``` text
-User Browser
-     |
-     | HTTP :80
-     v
-Frontend VM
-Nginx
-     |
-     | API HTTP :8000
-     v
-Backend VM
-FastAPI / Uvicorn
-     |
-     | PostgreSQL :5432
-     v
-Azure PostgreSQL
-axiondb
-     |
-     v
-telemetry table
-```
-
-Validate each layer independently.
-
-### Database
-
-``` sql
-SELECT COUNT(*) FROM telemetry;
-```
-
-### Backend
-
-``` bash
-curl http://<BACKEND-PUBLIC-IP>:8000/docs
-```
-
-### Backend API
-
-``` bash
-curl http://<BACKEND-PUBLIC-IP>:8000/devices
-```
-
-### Frontend
-
-``` bash
-curl -I http://localhost
-```
-
-### Browser
-
-Open:
-
-``` text
-http://<FRONTEND-PUBLIC-IP>
-```
-
-------------------------------------------------------------------------
-
-# 23. Troubleshooting
-
-## Frontend loads but no telemetry appears
-
-Check the API URL in source:
-
-``` bash
-grep -Rni "API_BASE" src/
-```
-
-Check the compiled build:
-
-``` bash
+```bash
+# Check the compiled build
 grep -Rqs "<BACKEND-PUBLIC-IP>:8000" dist/ \
-&& echo "CORRECT API FOUND" \
-|| echo "API NOT FOUND"
-```
+  && echo "✅ API FOUND" \
+  || echo "❌ API NOT FOUND"
 
-If the source was changed after the previous build, rebuild and
-redeploy:
+# If not found, fix the source and rebuild
+grep -Rni "API_BASE" src/
+sed -i 's|OLD_URL|http://<BACKEND-PUBLIC-IP>:8000|g' src/App.tsx src/components/pages/DashboardView.tsx src/components/pages/HistoricalTrends.tsx
 
-``` bash
 npm run build
-
 sudo rm -rf /var/www/html/*
 sudo cp -r dist/* /var/www/html/
-
 sudo systemctl reload nginx
 ```
 
-Then refresh the browser with:
+Then hard-refresh the browser: **Ctrl + F5**
 
-``` text
-Ctrl + F5
-```
+</details>
 
-## Backend cannot be reached
+<details>
+<summary><b>Backend cannot be reached from the browser</b></summary>
 
-Check Uvicorn:
-
-``` bash
+```bash
+# Check if Uvicorn is listening
 sudo ss -lntp | grep 8000
+# Should show: 0.0.0.0:8000
+
+# Test from the backend VM itself
+curl -i http://localhost:8000/docs
 ```
 
-The service should listen on:
+If Uvicorn is running but the browser can't connect:
+- Verify the Azure NSG allows **TCP 8000 inbound**
+- Ensure Uvicorn was started with `--host 0.0.0.0` (not `127.0.0.1`)
 
-``` text
-0.0.0.0:8000
-```
+</details>
 
-Check the Azure NSG and ensure TCP `8000` is allowed.
+<details>
+<summary><b>Backend cannot connect to PostgreSQL</b></summary>
 
-Test:
+Verify all of the following:
 
-``` bash
-curl -i http://<BACKEND-PUBLIC-IP>:8000/docs
-```
+| Check | Expected |
+|-------|----------|
+| PostgreSQL firewall allows Backend VM IP | ✅ |
+| Hostname in `config.py` | `postgresql-axion-dev-01.postgres.database.azure.com` |
+| Database name | `axiondb` |
+| Port | `5432` |
+| Credentials correct | ✅ |
+| `@` in password encoded as `%40` | ✅ |
 
-## Backend cannot access PostgreSQL
+</details>
 
-Verify:
+<details>
+<summary><b><code>/</code> returns 404 from FastAPI</b></summary>
 
--   PostgreSQL firewall allows the Backend VM IP.
--   PostgreSQL hostname is correct.
--   Database name is `axiondb`.
--   Port is `5432`.
--   Credentials are correct.
--   Password special characters are URL-encoded when required.
+This is **expected behavior**. FastAPI doesn't define a root route.
 
-## `/` returns 404 from FastAPI
-
-This does not necessarily indicate a problem.
-
-If:
-
-``` bash
+```bash
+# This returns 404 — NORMAL
 curl -i http://<BACKEND-PUBLIC-IP>:8000/
-```
 
-returns:
-
-``` json
-{"detail":"Not Found"}
-```
-
-but:
-
-``` bash
+# This should return 200 — verifies the service works
 curl -i http://<BACKEND-PUBLIC-IP>:8000/docs
 ```
 
-returns:
+Test the actual API endpoints listed in the Swagger documentation instead.
 
-``` text
-HTTP/1.1 200 OK
-```
+</details>
 
-the FastAPI service is reachable. Test the actual API endpoints listed
-in Swagger.
+---
 
-------------------------------------------------------------------------
+## 📌 Quick Reference Commands
 
-# 24. Security Considerations
+### Frontend VM
 
-This deployment exposes frontend HTTP port `80` and backend API port
-`8000`.
-
-For a production implementation, consider:
-
--   HTTPS for the frontend.
--   HTTPS for API communication.
--   Reverse proxying the API through Nginx or an Azure service.
--   Restricting backend port `8000` instead of allowing Internet access.
--   Using Azure Key Vault or another secret-management solution.
--   Removing passwords from source/configuration files.
--   Using environment variables for secrets.
--   Restricting PostgreSQL firewall rules to required sources.
--   Using managed identity where supported.
--   Avoiding public exposure of database ports.
--   Rotating any credentials that were previously exposed in
-    documentation or screenshots.
-
-------------------------------------------------------------------------
-
-# 25. Useful Commands
-
-### Check frontend API configuration
-
-``` bash
-grep -Rni "API_BASE" src/
-```
-
-### Check compiled API configuration
-
-``` bash
-grep -Rqs "<BACKEND-PUBLIC-IP>:8000" dist/ \
-&& echo "CORRECT API FOUND" \
-|| echo "API NOT FOUND"
-```
-
-### Check Nginx
-
-``` bash
+```bash
+# Check Nginx status
 sudo systemctl status nginx
-```
 
-### Reload Nginx
-
-``` bash
+# Reload Nginx after redeploying
 sudo systemctl reload nginx
-```
 
-### Check Nginx locally
-
-``` bash
+# Test Nginx locally
 curl -I http://localhost
+
+# Check compiled API URL
+grep -Rqs "<BACKEND-PUBLIC-IP>:8000" dist/ && echo "OK" || echo "MISSING"
+
+# Full redeploy
+npm run build && sudo rm -rf /var/www/html/* && sudo cp -r dist/* /var/www/html/ && sudo systemctl reload nginx
 ```
 
-### Check backend
+### Backend VM
 
-``` bash
-curl -i http://<BACKEND-PUBLIC-IP>:8000/docs
-```
+```bash
+# Start the API server
+uvicorn main:app --host 0.0.0.0 --port 8000
 
-### Check backend listener
-
-``` bash
+# Check if the server is listening
 sudo ss -lntp | grep 8000
+
+# Test the API
+curl -i http://localhost:8000/docs
+curl http://localhost:8000/devices
 ```
 
-### Check PostgreSQL data
+### Database (pgAdmin)
 
-``` sql
-SELECT *
-FROM telemetry
-ORDER BY timestamp DESC
-LIMIT 20;
+```sql
+-- Row count
+SELECT COUNT(*) FROM telemetry;
+
+-- Latest records
+SELECT * FROM telemetry ORDER BY timestamp DESC LIMIT 20;
 ```
 
-------------------------------------------------------------------------
+---
 
-# Repositories
+## 🔒 Security Considerations
 
-### Infrastructure
+> [!WARNING]
+> This deployment is designed for **development / learning purposes**. For production, address the following:
 
-``` text
-https://github.com/shyam-codeops/axion-app-monolithic-Infra.git
-```
+| Area | Recommendation |
+|------|----------------|
+| **HTTPS** | Enable TLS on both frontend (Nginx) and backend (reverse proxy) |
+| **API Exposure** | Reverse-proxy the backend through Nginx; don't expose port `8000` publicly |
+| **Secrets Management** | Use Azure Key Vault or environment variables instead of hardcoded credentials |
+| **NSG Rules** | Restrict source IPs instead of allowing `*` (any) |
+| **PostgreSQL Firewall** | Allow only required source IPs; disable public access if using VNet integration |
+| **Credential Rotation** | Rotate any credentials that were exposed in documentation or screenshots |
+| **Managed Identity** | Use Azure Managed Identity where supported to eliminate password-based auth |
 
-### Database Schema
+---
 
-``` text
-https://github.com/devopsinsiders/axion-database-schema.git
-```
+## 📊 Tech Stack Summary
 
-### Backend
+| Component | Technology | Port | Purpose |
+|-----------|------------|------|---------|
+| Infrastructure | Terraform + AzureRM `4.72.0` | — | IaC provisioning |
+| Database | Azure PostgreSQL Flexible Server | `5432` | Telemetry data storage |
+| Backend | Python + FastAPI + Uvicorn | `8000` | REST API for telemetry queries |
+| Frontend | React + Vite (TypeScript) | — | Dashboard SPA |
+| Web Server | Nginx | `80` | Serves frontend static build |
+| API Docs | Swagger UI / ReDoc | `8000/docs` | Interactive API documentation |
 
-``` text
-https://github.com/devopsinsiders/axion-telemetry-query-service.git
-```
+---
 
-### Frontend
+<div align="center">
 
-``` text
-https://github.com/devopsinsiders/axion-ui.git
-```
+**Built with ❤️ by [DevOps Insiders](https://github.com/devopsinsiders)**
 
-------------------------------------------------------------------------
-
-## Deployment Summary
-
-  Component           Technology                 Port
-  ------------------- ------------------- -----------
-  Infrastructure      Terraform                   ---
-  Database            Azure PostgreSQL           5432
-  Backend             FastAPI + Uvicorn          8000
-  Frontend            React/Vite                  ---
-  Web Server          Nginx                        80
-  API Documentation   Swagger               8000/docs
-
-The original deployment guide documents the Terraform, PostgreSQL,
-backend, and frontend stages across the full deployment workflow.
-fileciteturn0file0L2-L4 fileciteturn0file0L46-L61
-fileciteturn0file0L96-L126
+</div>
+]]>
