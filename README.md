@@ -1,4 +1,4 @@
-<![CDATA[<!-- markdownlint-disable MD033 -->
+<!-- markdownlint-disable MD033 -->
 <div align="center">
 
 # 🚀 Axion Intelligence Platform — Monolithic Deployment
